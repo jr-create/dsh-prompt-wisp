@@ -1,0 +1,7 @@
+# npm/pnpm artifacts
+node_modules/
+*.tgz
+
+# OS
+Thumbs.db
+.DS_Store

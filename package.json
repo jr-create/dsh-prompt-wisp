@@ -1,0 +1,58 @@
+{
+  "name": "dsh-prompt-wisp",
+  "version": "0.1.0",
+  "description": "Prompt Wisp 提示词精灵 — 在聊天输入区发送按钮旁加一枚「优化提示词」按钮，一键把草稿交给宿主已配置的模型改写成清晰、结构化、可直接执行的提示词。",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "homepage": "https://github.com/jr-create/dsh-prompt-wisp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jr-create/dsh-prompt-wisp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jr-create/dsh-prompt-wisp/issues"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./engine": "./lib/engine.js",
+    "./http": "./lib/http.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "deepseek",
+    "dsh",
+    "dsh-plugin",
+    "prompt",
+    "prompt-optimization",
+    "composer",
+    "chat",
+    "cordis"
+  ]
+}
