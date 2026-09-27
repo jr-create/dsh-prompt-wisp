@@ -5,15 +5,16 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRoutes, setConversationDigestReader, isLoopbackRequest, ROUTE_PREFIX } from '../lib/http.js';
+import { createRoutes, setConfigStore, setConversationDigestReader, isLoopbackRequest, ROUTE_PREFIX } from '../lib/http.js';
 import { readConversationDigest } from '../lib/index.js';
 
 /** Minimal IncomingMessage double. */
-function fakeReq({ url = '/', headers = {}, socket = { remoteAddress: '127.0.0.1' }, body } = {}) {
+function fakeReq({ url = '/', headers = {}, socket = { remoteAddress: '127.0.0.1' }, body, method = 'GET' } = {}) {
   const listeners = {};
   const req = {
     url,
     headers,
+    method,
     socket,
     on(event, fn) {
       (listeners[event] ??= []).push(fn);
@@ -237,6 +238,80 @@ test('readConversationDigest is exported by the host half and validates its inpu
   const noService = await readConversationDigest({ get: () => undefined }, 'session-abc');
   assert.equal(noService.digest, '');
   assert.equal(noService.reason, 'persistence-unavailable');
+});
+
+test('config route: GET reads, POST writes, and both survive a missing store', async () => {
+  const handler = findRoute(routesFor(fakeCtx()), '/config');
+
+  // No store wired → GET degrades to defaults, POST refuses.
+  setConfigStore(undefined);
+  const getRes = fakeRes();
+  await handler(fakeReq({ headers: LOOPBACK_HEADERS }), getRes);
+  assert.equal(getRes.body.ok, true);
+  assert.equal(getRes.body.persisted, false);
+  const postRes = fakeRes();
+  await handler(fakeReq({ method: 'POST', headers: LOOPBACK_HEADERS, body: { trimFiller: true } }), postRes);
+  assert.equal(postRes.body.ok, false);
+
+  // A wired store: GET reads, POST writes the patch.
+  let stored = { trimFiller: false, detailMode: false };
+  const seen = [];
+  setConfigStore({
+    read: async () => stored,
+    write: async (patch) => {
+      seen.push(patch);
+      stored = { ...stored, ...patch };
+      return stored;
+    },
+    hooks: {},
+  });
+  const getRes2 = fakeRes();
+  await handler(fakeReq({ headers: LOOPBACK_HEADERS }), getRes2);
+  assert.deepEqual(getRes2.body.config, { trimFiller: false, detailMode: false });
+  assert.equal(getRes2.body.persisted, true);
+
+  const postRes2 = fakeRes();
+  await handler(
+    fakeReq({ method: 'POST', headers: LOOPBACK_HEADERS, body: { trimFiller: true } }),
+    postRes2,
+  );
+  assert.equal(postRes2.body.ok, true);
+  assert.deepEqual(seen[0], { trimFiller: true }, 'the raw patch reaches the store');
+  setConfigStore(undefined);
+});
+
+test('optimize receives the composed system prompt and the persisted config', async () => {
+  const seenSystems = [];
+  setConversationDigestReader(async () => ({ digest: '' }));
+  const ports = {
+    llm: {
+      stream(options) {
+        seenSystems.push(options.system);
+        return (async function* () {
+          yield { type: 'text-delta', text: '结果' };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        })();
+      },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+  };
+  setConfigStore({
+    read: async () => ({ trimFiller: false, detailMode: true }),
+    write: async () => ({}),
+    hooks: {
+      composeSystemPrompt(config) {
+        // Mirrors lib/config.js's contract: base + mode section.
+        return config && config.detailMode === true ? 'BASE+详细优化' : 'BASE';
+      },
+    },
+  });
+  const handler = findRoute(routesFor(fakeCtx(ports)), '/optimize');
+  const res = fakeRes();
+  await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: 'hello' } }), res);
+  assert.equal(res.body.ok, true);
+  assert.equal(seenSystems[0], 'BASE+详细优化', 'the config-driven prompt reached the model call');
+  setConfigStore(undefined);
+  setConversationDigestReader(undefined);
 });
 
 test('every route enforces the trust fence with a 403', async () => {

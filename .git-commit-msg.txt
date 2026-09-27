@@ -1,24 +1,39 @@
-feat: speed pass - thinner digest, capped generation, lowest effort, hard budget
+feat: settings page with trim-filler and detailed/compact modes
 
-User-visible latency on the same route dropped from 35-97s (p50 ~48s) to
-15-30s typical, measured over repeated grounded and ungrounded calls on
-workbuddy/glm-5.3-flash.
+The plugin gains a settings screen section ("Prompt Wisp", after the
+management plugins) and two behavior switches:
 
-- Digest bounds cut to a sketch: 12 messages/600 chars/4000 total ->
-  4 messages/160 chars/800 total; event tail scan 80 -> 40. The context
-  only needs to say what the session is about.
-- System prompt gains hard speed rules: output 0.5-1.5x the draft length,
-  usually <=200 chars, no context recitation, no explanations per rule,
-  no lead-in or wrap-up.
-- fastCallOptions: cap generation at 4000 tokens (thinking models count
-  reasoning against the same budget - an 800 cap starved glm-5.3-flash
-  into a zero-visible-text stop, the bug this pass started from) and pick
-  the lowest reasoning effort the exact route declares (GLM reports "off").
-- Two self-healing fallbacks, because a slower answer beats a fast error:
-  an adapter-rejected effort id retries without the effort; a starved
-  zero-text stop retries once uncapped.
-- 90s hard budget raced per iterator step; the timeout error is
-  distinguishable and the stream is closed fire-and-forget (awaiting
-  return() hangs behind a never-settling next()).
+- 去废话 (trim filler): strip politeness, small talk, repetition and
+  empty embellishment from the draft before optimizing; meaning is
+  preserved.
+- 详细优化 (detailed optimization): the default is compact optimization
+  (0.5-1.5x the draft length). When on, the rewrite expands into a full
+  structured prompt and the length cap relaxes to 3x.
 
-52 offline tests (was 47).
+Config lives in <DSH_HOME>/dsh-prompt-wisp/config.json, written
+atomically (temp + rename) and normalized on every read, so a
+hand-broken document falls back to defaults instead of breaking the
+button. The settings service (ctx.settings.register) would be the
+idiomatic home, but its schema parameter is a schemastery value and
+importing @deepseek-ai/schemastery from a link:-installed plugin breaks
+the zero-dependency red line that keeps `dsh web` bootable - the
+plugin-owned file is the honest alternative.
+
+Wiring: the host half injects a config store into the HTTP layer (same
+seam as the digest reader); /optimize resolves the persisted config and
+passes composeSystemPrompt(config) through an engine hook, keeping the
+engine free of a circular import. The modes append directive blocks to
+the system prompt only when enabled - the default config composes to
+the unchanged base prompt.
+
+Live verification: both switches persist and merge (PATCH semantics),
+the verbose draft with trim-filler on produced a 112-char prompt
+grounded in the session's facts, and the config page bundle is served
+in the boot graph.
+
+Also fixed live: the digest read now carries its own 15s budget - a
+1.2MB legacy session's open() blocked past the 90s optimizer timeout
+and failed the whole call; the read now degrades to reason "slow-open"
+and the optimization proceeds on the draft alone.
+
+58 offline tests (was 52).
