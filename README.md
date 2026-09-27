@@ -89,9 +89,10 @@ dsh plugin --profile web add link:<本仓库绝对路径>
 
 ## 兼容性
 
-- Node `^22.19.0 || >=24.0.0`；目标 profile：**web**；
-- 宿主服务均为软依赖：没有 `llm` 服务的 profile 里插件照常加载，按钮会明确提示「宿主没有可用的 LLM 服务」；没有 `sessionPersistence` 时上下文感知自动关闭，仅按草稿优化；
-- 测试：`node --test`，79 项，全部离线。
+- **DSH 宿主：`0.1.5-rc.2`（本插件开发与全部 81 项测试所验证的版本）**；目标 profile：**web**；Node `^22.19.0 || >=24.0.0`；
+- 插件使用的能力面（`ctx.llm.stream`、`ctx.sessionPersistence`、`ctx.agentDefaultModel`、webServer 路由、`conversation.input.*`/`settings.section` 槽位）在该版本均已存在且稳定；
+- 宿主服务均为软依赖：没有 `llm` 服务的 profile 里插件照常加载，按钮会明确提示「宿主没有可用的 LLM 服务」；没有 `sessionPersistence` 时上下文感知与执行监控自动关闭，仅按草稿优化；
+- 测试：`node --test`，81 项，全部离线。
 
 ## 会话执行监控
 
