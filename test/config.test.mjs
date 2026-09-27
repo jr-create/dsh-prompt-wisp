@@ -21,10 +21,15 @@ test('normalizeConfig is liberal: unknown keys drop, wrong types coerce to defau
   assert.deepEqual(normalizeConfig('nonsense'), DEFAULT_CONFIG);
   assert.deepEqual(
     normalizeConfig({ trimFiller: true, detailMode: 'yes', unknown: 1 }),
-    { trimFiller: true, detailMode: false },
+    { ...DEFAULT_CONFIG, trimFiller: true, detailMode: false },
     'non-boolean detailMode falls back, unknown key drops',
   );
-  assert.deepEqual(normalizeConfig({ trimFiller: 1 }), { trimFiller: false, detailMode: false });
+  assert.deepEqual(normalizeConfig({ trimFiller: 1 }), DEFAULT_CONFIG);
+  // Watch switches default on but can be turned off.
+  assert.deepEqual(
+    normalizeConfig({ showWatchBanner: false, watchStall: false }),
+    { ...DEFAULT_CONFIG, showWatchBanner: false, watchStall: false },
+  );
 });
 
 test('buildConfigDirectives is empty on defaults and encodes each mode', () => {
@@ -61,22 +66,32 @@ test('the store persists atomically and survives a hand-broken file', async () =
   process.env.DSH_HOME = tempHome;
   try {
     // Absent file → defaults.
-    assert.deepEqual(await readConfig(), { trimFiller: false, detailMode: false });
+    assert.deepEqual(await readConfig(), DEFAULT_CONFIG);
 
     // Write a patch; the document lands and reads back.
     const saved = await writeConfig({ trimFiller: true, detailMode: true });
-    assert.deepEqual(saved, { trimFiller: true, detailMode: true });
+    assert.deepEqual(saved, { ...DEFAULT_CONFIG, trimFiller: true, detailMode: true });
     const onDisk = JSON.parse(readFileSync(configFilePath(), 'utf8'));
-    assert.deepEqual(onDisk, { trimFiller: true, detailMode: true });
+    assert.deepEqual(onDisk, { ...DEFAULT_CONFIG, trimFiller: true, detailMode: true });
     assert.equal(existsSync(configFilePath() + '.' + process.pid + '.tmp'), false, 'temp file renamed away');
 
     // Merge semantics: a partial patch keeps the other key.
     const merged = await writeConfig({ detailMode: false });
-    assert.deepEqual(merged, { trimFiller: true, detailMode: false });
+    assert.deepEqual(merged, { ...DEFAULT_CONFIG, trimFiller: true, detailMode: false });
+
+    // Watch switches persist through the same path.
+    const watchOff = await writeConfig({ showWatchBanner: false, watchToolLoop: false });
+    assert.deepEqual(watchOff, {
+      ...DEFAULT_CONFIG,
+      trimFiller: true,
+      detailMode: false,
+      showWatchBanner: false,
+      watchToolLoop: false,
+    });
 
     // A hand-edited nonsense document normalizes instead of throwing.
     writeFileSync(configFilePath(), '{this is not json');
-    assert.deepEqual(await readConfig(), { trimFiller: false, detailMode: false });
+    assert.deepEqual(await readConfig(), DEFAULT_CONFIG);
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = previous;

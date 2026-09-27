@@ -113,6 +113,39 @@ test('degrades on empty or garbage input', () => {
   assert.deepEqual(analyzeWatch([null, 'string', 42]), { status: 'healthy', findings: [] });
 });
 
+test('the watch switches gate their rules', () => {
+  // Build a tail that would trip two switchable rules at once.
+  const events = [ev('turn/start', NOW - 12000)];
+  for (let i = 0; i < NO_OUTPUT_STEPS + 2; i += 1) {
+    events.push(ev('step/start', NOW - 11000 + i * 1000));
+    events.push(ev('tool/call', NOW - 10500 + i * 1000, { name: 'pwsh', arguments: `{"command":"do ${i}"}` }));
+  }
+
+  // All on: no-output + tool-loop fire (stalled needs 45s of silence).
+  const allOn = analyzeWatch(events, { now: NOW });
+  assert.ok(allOn.findings.some((f) => f.kind === 'no-output'));
+  assert.ok(allOn.findings.some((f) => f.kind === 'tool-loop'));
+
+  // no-output off → only tool-loop remains.
+  const noNoOutput = analyzeWatch(events, { now: NOW, watchNoOutput: false });
+  assert.equal(noNoOutput.findings.find((f) => f.kind === 'no-output'), undefined);
+  assert.ok(noNoOutput.findings.some((f) => f.kind === 'tool-loop'));
+
+  // tool-loop off → only no-output remains.
+  const noLoop = analyzeWatch(events, { now: NOW, watchToolLoop: false });
+  assert.equal(noLoop.findings.find((f) => f.kind === 'tool-loop'), undefined);
+  assert.ok(noLoop.findings.some((f) => f.kind === 'no-output'));
+
+  // stalled off → a hung turn no longer alerts.
+  const hung = [
+    ev('turn/start', NOW - STALL_MS - 20000),
+    ev('step/start', NOW - STALL_MS - 10000),
+    ev('tool/call', NOW - STALL_MS - 5000, { name: 'pwsh', arguments: '{"command":"long"}' }),
+  ];
+  assert.ok(analyzeWatch(hung, { now: NOW }).findings.some((f) => f.kind === 'stalled'));
+  assert.equal(analyzeWatch(hung, { now: NOW, watchStall: false }).findings.length, 0);
+});
+
 test('toolCallSignature normalizes counters, guids, and whitespace', () => {
   const a = toolCallSignature({ data: { name: 'pwsh', arguments: '{"command":"select 1 from x where id=12345678-1234-1234-1234-123456789abc and n=42"}' } });
   const b = toolCallSignature({ data: { name: 'pwsh', arguments: '{"command":"select 2 from x where id=87654321-4321-4321-4321-cba987654321 and n=77"}' } });
