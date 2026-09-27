@@ -142,15 +142,82 @@ test('route reports a resolution failure as data, not a crash', async () => {
   assert.ok(res.body.error.length > 0);
 });
 
-test('optimize returns the cleaned optimization', async () => {
-  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+test('optimize (compact default) runs the LOCAL engine — no model, no context read', async () => {
+  let streamCalled = 0;
+  let digestCalled = 0;
+  setConversationDigestReader(async () => { digestCalled += 1; return { digest: '' }; });
+  const llm = { stream() { streamCalled += 1; return (async function* () {})(); } };
+  const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
   const res = fakeRes();
   await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '  帮我写周报  ' } }), res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
-  assert.equal(res.body.optimized, '结构化后的提示词');
+  assert.equal(res.body.engine, 'local', 'compact mode routes to the local rules engine');
+  assert.equal(res.body.provider, 'local');
+  assert.equal(streamCalled, 0, 'no model call happens');
+  assert.equal(digestCalled, 0, 'no context read happens — it would waste the 1-2s budget');
+  assert.ok(res.body.optimized.length > 0);
+  setConversationDigestReader(undefined);
+});
+
+test('optimize (detail mode) races model routes and grounds with context', async () => {
+  const seen = [];
+  setConversationDigestReader(async (_ctx, sessionId) => {
+    seen.push(sessionId);
+    return { digest: '用户：做一个插件\n助手：好的' };
+  });
+  setConfigStore({
+    read: async () => ({ trimFiller: false, detailMode: true }),
+    write: async () => ({}),
+    hooks: { composeSystemPrompt: () => 'BASE+详细' },
+  });
+  const seenSystems = [];
+  const llm = {
+    async listProviders() { return [{ id: 'prov-b', name: 'B' }]; },
+    stream(options) {
+      seenSystems.push(options.system);
+      return (async function* () {
+        yield { type: 'text-delta', text: '详细的结构化结果' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
+  const res = fakeRes();
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '继续优化它', sessionId: 'session-abc' } }),
+    res,
+  );
+  assert.equal(res.body.ok, true);
+  assert.equal(seen[0], 'session-abc', 'the browser-supplied session id reaches the reader');
+  assert.equal(res.body.contextUsed, true);
+  assert.equal(res.body.engine, 'model-race');
   assert.equal(res.body.provider, 'prov-b');
-  assert.equal(res.body.tookMs >= 0, true);
+  assert.equal(seenSystems[0], 'BASE+详细', 'config-composed prompt reached the model call');
+  setConversationDigestReader(undefined);
+  setConfigStore(undefined);
+});
+
+test('optimize (detail mode) surfaces model failure when every route fails', async () => {
+  setConfigStore({
+    read: async () => ({ trimFiller: false, detailMode: true }),
+    write: async () => ({}),
+    hooks: {},
+  });
+  const failing = {
+    async listProviders() { return []; },
+    stream() {
+      return (async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'bad key', code: 'AUTH' } } };
+      })();
+    },
+  };
+  const handler = findRoute(routesFor(fakeCtx({ llm: failing })), '/optimize');
+  const res = fakeRes();
+  await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下' } }), res);
+  assert.equal(res.body.ok, false);
+  assert.match(res.body.error, /bad key/);
+  setConfigStore(undefined);
 });
 
 test('optimize returns ok:false with the reason for client mistakes', async () => {
@@ -171,28 +238,27 @@ test('optimize rejects a non-JSON body', async () => {
   assert.match(res.body.error, /JSON/);
 });
 
-test('optimize surfaces model failure messages', async () => {
-  const failing = {
-    stream() {
-      return (async function* () {
-        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'bad key', code: 'AUTH' } } };
-      })();
-    },
-  };
-  const handler = findRoute(routesFor(fakeCtx({ llm: failing })), '/optimize');
-  const res = fakeRes();
-  await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下' } }), res);
-  assert.equal(res.body.ok, false);
-  assert.match(res.body.error, /bad key/);
-});
-
-test('optimize grounds in the session digest when a reader is wired and sessionId is given', async () => {
+test('optimize (detail) grounds in the session digest when a reader is wired and sessionId is given', async () => {
   const seen = [];
   setConversationDigestReader(async (_ctx, sessionId) => {
     seen.push(sessionId);
     return { digest: '用户：做一个插件\n助手：好的' };
   });
-  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+  setConfigStore({
+    read: async () => ({ trimFiller: false, detailMode: true }),
+    write: async () => ({}),
+    hooks: {},
+  });
+  const llm = {
+    async listProviders() { return []; },
+    stream() {
+      return (async function* () {
+        yield { type: 'text-delta', text: '详细结果' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
   const res = fakeRes();
   await handler(
     fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '继续优化它', sessionId: 'session-abc' } }),
@@ -201,8 +267,8 @@ test('optimize grounds in the session digest when a reader is wired and sessionI
   assert.equal(res.body.ok, true);
   assert.equal(seen[0], 'session-abc', 'the browser-supplied session id reaches the reader');
   assert.equal(res.body.contextUsed, true);
-  assert.equal(res.body.contextReason, undefined);
   setConversationDigestReader(undefined);
+  setConfigStore(undefined);
 });
 
 test('optimize degrades gracefully when no digest reader is wired', async () => {
@@ -217,9 +283,23 @@ test('optimize degrades gracefully when no digest reader is wired', async () => 
   assert.equal(res.body.contextUsed, false);
 });
 
-test('optimize reports context unavailability reasons without failing', async () => {
+test('optimize reports context unavailability reasons without failing (detail mode)', async () => {
   setConversationDigestReader(async () => ({ digest: '', reason: 'read-failed', detail: 'boom' }));
-  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+  setConfigStore({
+    read: async () => ({ trimFiller: false, detailMode: true }),
+    write: async () => ({}),
+    hooks: {},
+  });
+  const llm = {
+    async listProviders() { return []; },
+    stream() {
+      return (async function* () {
+        yield { type: 'text-delta', text: '结果' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
+  const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
   const res = fakeRes();
   await handler(
     fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下', sessionId: 'session-xyz' } }),
@@ -229,6 +309,7 @@ test('optimize reports context unavailability reasons without failing', async ()
   assert.equal(res.body.contextUsed, false);
   assert.equal(res.body.contextReason, 'read-failed');
   setConversationDigestReader(undefined);
+  setConfigStore(undefined);
 });
 
 test('readConversationDigest is exported by the host half and validates its input', async () => {
@@ -328,17 +409,21 @@ test('every route enforces the trust fence with a 403', async () => {
 });
 
 test('handler crashes become 500 with an error envelope', async () => {
-  // Stream failures are converted to ok:false by the engine; the 500 path is
-  // for genuinely unexpected crashes, like the context itself throwing.
-  const crashing = {
-    get() {
+  // The compact path never touches the config store; force detail mode so a
+  // throwing ctx.get IS reached (configStore.read → ctx.get internals), and
+  // the crash takes the 500 path in route().
+  setConfigStore({
+    read() {
       throw new Error('boom');
     },
-  };
-  const handler = findRoute(routesFor(crashing), '/optimize');
+    write: async () => ({}),
+    hooks: {},
+  });
+  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
   const res = fakeRes();
   await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: 'hello' } }), res);
   assert.equal(res.statusCode, 500);
   assert.equal(res.body.ok, false);
   assert.match(res.body.error, /boom/);
+  setConfigStore(undefined);
 });
