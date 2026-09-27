@@ -1,24 +1,23 @@
-feat: dual-engine optimization - local compact (9-50ms), raced detail (3-6s)
+fix: compact mode now races models too - a no-op rewrite reads as broken
 
-User targets: compact within 1-2s, detailed within 10s. A remote model
-call cannot do 1-2s, so the engines split:
+Live feedback: the local rules pass only fired on dictionary hits, so
+real drafts came back unchanged and the compact mode read as broken.
+The user switched to detail mode to get any real optimization.
 
-- COMPACT (简便优化, default) now runs a local rules engine
-  (lib/local.js): a 去废话 dictionary (stacked interjections, trailing
-  gratitude, mid-sentence softeners, vague hedges like 随便/大概),
-  shape normalization, and adjacent-duplicate-sentence folding - all
-  line-structure preserving, never returning empty, meaning preserved
-  by construction. Zero model calls, zero token cost. Measured 9-50ms
-  per request on the live route (5-run avg 18ms), budget 2s.
-- DETAILED (详细优化) races up to three model routes (primary +
-  other registered providers' first models) and takes the first clean
-  answer; 10s per-route budget. Measured 3.2-5.6s on the live route.
-  Context grounding and the config-composed system prompt still apply.
+Both modes now go through the model race; they differ in budget and
+prompt face, not in engine:
 
-The settings page copy documents both engines; trim-filler applies to
-both. The single-route optimizePrompt stays exported for callers that
-want the classic behavior with its self-healing fallbacks.
+- compact: lean system prompt (5 lines, tuned for short output), no
+  context read, 6s per-route budget. Measured 0.5-1.5s per call.
+- detail: full structured prompt, session context grounding, 10s
+  per-route budget. Measured 1.4-4s.
 
-67 offline tests (was 58): local rules (meaning preservation, no-empty
-invariant, 20k-char speed budget), race resolution, and the compact/
-detail dispatch through /optimize.
+The local rules engine is demoted to the instant fallback when the race
+fails or times out - a rule-passed draft in the same second beats a
+provider error, and trim-filler still applies there.
+
+composeSystemPrompt now owns both faces: the compact face lives in
+config.js as a config concern (the engine keeps the base prompt).
+
+68 offline tests (was 67): the compact race face, the instant local
+fallback, and the detail fallback behavior.

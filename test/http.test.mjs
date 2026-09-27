@@ -142,22 +142,68 @@ test('route reports a resolution failure as data, not a crash', async () => {
   assert.ok(res.body.error.length > 0);
 });
 
-test('optimize (compact default) runs the LOCAL engine — no model, no context read', async () => {
-  let streamCalled = 0;
+test('optimize (compact default) races models with the lean prompt, no context read', async () => {
   let digestCalled = 0;
   setConversationDigestReader(async () => { digestCalled += 1; return { digest: '' }; });
-  const llm = { stream() { streamCalled += 1; return (async function* () {})(); } };
+  setConfigStore({
+    read: async () => ({ trimFiller: true, detailMode: false }),
+    write: async () => ({}),
+    hooks: { composeSystemPrompt: (config) => (config?.detailMode ? 'DETAIL' : 'COMPACT+去废话') },
+  });
+  const seen = [];
+  const llm = {
+    async listProviders() { return [{ id: 'prov-b', name: 'B' }]; },
+    stream(options) {
+      seen.push({ system: options.system, model: options.model });
+      return (async function* () {
+        yield { type: 'text-delta', text: '更清晰的改写' };
+        yield { type: 'finish', reason: { kind: 'stop' } };
+      })();
+    },
+  };
   const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
   const res = fakeRes();
-  await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '  帮我写周报  ' } }), res);
-  assert.equal(res.statusCode, 200);
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '好的，帮我写周报，谢谢', sessionId: 'session-abc' } }),
+    res,
+  );
   assert.equal(res.body.ok, true);
-  assert.equal(res.body.engine, 'local', 'compact mode routes to the local rules engine');
-  assert.equal(res.body.provider, 'local');
-  assert.equal(streamCalled, 0, 'no model call happens');
-  assert.equal(digestCalled, 0, 'no context read happens — it would waste the 1-2s budget');
-  assert.ok(res.body.optimized.length > 0);
+  assert.equal(res.body.engine, 'model-race', 'compact mode races models with the lean prompt');
+  assert.equal(res.body.provider, 'prov-b');
+  assert.equal(seen[0].system, 'COMPACT+去废话', 'the compact face reached the model call');
+  assert.equal(digestCalled, 0, 'no context read in compact mode — the budget is for the model');
   setConversationDigestReader(undefined);
+  setConfigStore(undefined);
+});
+
+test('optimize (compact) falls back to the local engine instantly when the race fails', async () => {
+  const started = Date.now();
+  setConfigStore({
+    read: async () => ({ trimFiller: true, detailMode: false }),
+    write: async () => ({}),
+    hooks: {},
+  });
+  const llm = {
+    async listProviders() { return []; },
+    stream() {
+      return (async function* () {
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'bad key', code: 'AUTH' } } };
+      })();
+    },
+  };
+  const handler = findRoute(routesFor(fakeCtx({ llm })), '/optimize');
+  const res = fakeRes();
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '好的，帮我写周报，麻烦你了' } }),
+    res,
+  );
+  assert.equal(res.body.ok, true, 'the local fallback answers instead of erroring');
+  assert.equal(res.body.engine, 'local-fallback');
+  assert.equal(res.body.degraded, true);
+  assert.match(res.body.optimized, /帮我写周报/);
+  assert.doesNotMatch(res.body.optimized, /麻烦你/);
+  assert.ok(Date.now() - started < 3000, 'the fallback is instant');
+  setConfigStore(undefined);
 });
 
 test('optimize (detail mode) races model routes and grounds with context', async () => {
@@ -198,7 +244,7 @@ test('optimize (detail mode) races model routes and grounds with context', async
   setConfigStore(undefined);
 });
 
-test('optimize (detail mode) surfaces model failure when every route fails', async () => {
+test('optimize (detail mode) falls back to local rules when every route fails', async () => {
   setConfigStore({
     read: async () => ({ trimFiller: false, detailMode: true }),
     write: async () => ({}),
@@ -215,8 +261,10 @@ test('optimize (detail mode) surfaces model failure when every route fails', asy
   const handler = findRoute(routesFor(fakeCtx({ llm: failing })), '/optimize');
   const res = fakeRes();
   await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下' } }), res);
-  assert.equal(res.body.ok, false);
-  assert.match(res.body.error, /bad key/);
+  // The local fallback answers with the unchanged-ish draft instead of an
+  // error — a rule-passed "总结一下。" beats a dead provider.
+  assert.equal(res.body.ok, true, 'local fallback prevents a hard failure');
+  assert.equal(res.body.engine, 'local-fallback');
   setConfigStore(undefined);
 });
 

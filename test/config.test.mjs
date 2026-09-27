@@ -37,14 +37,22 @@ test('buildConfigDirectives is empty on defaults and encodes each mode', () => {
   assert.doesNotMatch(trimOnly, /B\. 详细优化/);
 });
 
-test('composeSystemPrompt appends directives on top of the base prompt', async () => {
+test('composeSystemPrompt picks the compact or detail face by mode', async () => {
   const { OPTIMIZER_SYSTEM_PROMPT } = await import('../lib/engine.js');
+  // Detail mode: the full base prompt (plus trim directive when on).
+  const detail = composeSystemPrompt({ detailMode: true, trimFiller: true });
+  assert.ok(detail.startsWith(OPTIMIZER_SYSTEM_PROMPT));
+  assert.match(detail, /A\. 去废话/);
+  assert.doesNotMatch(detail, /B\. 详细优化/, 'detail directive is the mode itself, not re-added');
+  // Compact mode: the lean face — short, no structure scaffolding.
+  const compact = composeSystemPrompt({ detailMode: false, trimFiller: true });
+  assert.match(compact, /提示词工程师/);
+  assert.match(compact, /1~3 句话/);
+  assert.match(compact, /去废话/);
+  assert.doesNotMatch(compact, /结构化：用简短的标题/);
   const plain = composeSystemPrompt(undefined);
-  assert.equal(plain, OPTIMIZER_SYSTEM_PROMPT, 'defaults compose to the base prompt verbatim');
-  const detailed = composeSystemPrompt({ detailMode: true });
-  assert.ok(detailed.startsWith(OPTIMIZER_SYSTEM_PROMPT));
-  assert.match(detailed, /可选模式：/);
-  assert.match(detailed, /B\. 详细优化/);
+  assert.match(plain, /1~3 句话/);
+  assert.doesNotMatch(plain, /去废话/);
 });
 
 test('the store persists atomically and survives a hand-broken file', async () => {
