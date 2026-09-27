@@ -61,8 +61,21 @@ test('api contract — non-JSON bodies are reported, not swallowed', () => {
   assert.match(source, /payload\.error \|\|/, 'server error message surfaced');
 });
 
-test('deferred registration — the slot waits for its declarer', () => {
-  assert.match(source, /ctx\.slots\.inject\('conversation\.input\.right'/, 'deferred slot injection');
-  assert.match(source, /ctx\.slots\.register\(\{[^}]*name: 'conversation\.input\.right'/s, 'slot registration name');
-  assert.match(source, /id: 'prompt-wisp'/, 'entry id');
+test('deferred registration — every slot waits for its declarer', () => {
+  assert.match(source, /ctx\.slots\.inject\('conversation\.input\.right'/, 'composer button slot');
+  assert.match(source, /ctx\.slots\.inject\('conversation\.input\.dock'/, 'watch banner slot');
+  assert.match(source, /ctx\.slots\.inject\('settings\.section'/, 'settings page slot');
+  assert.match(source, /id: 'prompt-wisp-watch'/, 'watch banner entry id');
+});
+
+test('watch banner lives in the dock, not on the button — no overlay over input/transcript', () => {
+  // The banner is its own component registered to input.dock (in-flow above
+  // the composer), NOT a popover anchored to the 26px button.
+  assert.match(source, /function WispWatchBanner/, 'banner component exists');
+  assert.match(source, /name: 'conversation\.input\.dock'/, 'banner registered to the dock');
+  // The old button-anchored popover/dot is gone.
+  assert.doesNotMatch(source, /dpw-watch\b/, 'old button-anchored watch popover removed');
+  assert.doesNotMatch(source, /dpw-watch-dot/, 'old watch dot removed');
+  // The banner only renders when there are findings worth showing.
+  assert.match(source, /var visible = showable && findingsKey !== dismissedKey;/, 'visibility gate');
 });

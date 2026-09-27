@@ -1,31 +1,18 @@
-feat: session execution monitor - stall, no-output, tool-loop, turn-error
+fix: move the watch banner to the input.dock slot - full-width, in-flow
 
-The composer button doubles as an execution watchdog: the client polls
-GET /api/dsh-prompt-wisp/watch every 5s for the current session, and the
-host analyzes the log tail (last 120 events via sessionPersistence, read
-handle, 5s deadline race) with pure rules from lib/watch.js:
+Live feedback: the button-anchored popover covered the input field or
+the transcript and was unreadable.
 
-- stalled (alert): open turn with no new events for 45s - hung tool,
-  wedged provider, or crashed loop.
-- no-output (warn): 8+ steps in an open turn with zero visible text -
-  spinning without saying anything.
-- tool-loop (warn): same tool called 5 times with near-identical
-  arguments (GUIDs, counters and whitespace normalized away, so a loop
-  is a loop but genuinely different commands stay distinct).
-- turn-err (warn): the most recent turn ended with an error, fresh
-  within 2x the stall window.
+The banner is now its own component (WispWatchBanner) registered in the
+official conversation.input.dock slot - the full-width strip above the
+composer card, in normal document flow, so it never overlays anything
+and findings read as text instead of a cramped tooltip. Dismissal now
+keys on the finding set: a NEW finding always re-surfaces, old ones
+stay dismissed (replacing the old pulsing-dot reopen affordance).
 
-Findings render as a popover next to the button with severity colors;
-dismissing leaves a pulsing dot that reopens it. Polling pauses on
-hidden tabs. The analyzer is pure and read-only - it never writes to
-the session nor interrupts anything; the user decides.
+Verified in a real host: the dock registration, banner component and
+styles are served in the boot bundle, the old popover/dot are gone,
+and `dsh web` boots clean.
 
-Live verification: healthy active session -> healthy; legacy 1.2MB
-session -> healthy in 59ms; unknown id -> degrades with reason
-"not-found". A missing import (setSessionWatchReader) crashed `dsh web`
-at boot during verification - caught by the real-host smoke test, fixed
-before commit; the packaging test suite now runs against every lib
-module but boot requires the host, which is exactly the risk the
-smoke run exists for.
-
-79 offline tests (was 68).
+80 offline tests (was 79): the dock registration, banner gating, and
+the removal of the button-anchored watch UI are pinned structurally.
