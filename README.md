@@ -15,10 +15,18 @@
 | --- | --- |
 | ✦ 优化按钮 | 注册在官方 `conversation.input.right` 槽位（composer 工具行、发送键左侧），深浅色主题自动适配 |
 | 一键改写 | 读取输入框草稿 → 宿主端调用你配置的默认模型 → 结构化改写 → 写回输入框 |
+| **会话上下文感知** | 自动读取当前会话最近的对话（经 `sessionPersistence`，最多 12 条），改写时把"它 / 上面的方案"这类指代落到具体对象上 |
 | 安全围栏 | 所有 HTTP 路由 loopback-only + same-origin；草稿单次上限 20,000 字符 |
 | 失败可见 | 空草稿、超长、模型错误都在按钮旁内联提示，绝不静默失败 |
 
 改写遵循一套内置的提示词工程规则：保留全部意图与约束、补全明显缺口（输出格式/范围）、消除模糊表述、语言跟随草稿——模型只返回改写正文，不夹带解释。
+
+### 上下文感知怎么工作
+
+- 浏览器只把 `sessionId` 发给宿主；**会话日志只在宿主端读取**（经官方 `sessionPersistence` 服务的只读句柄，绝不碰原始 `.jsonl.zstd` 文件）；
+- 摘要只取**真人发言与模型回答**——注入的上下文（文件变更通知、skill 内容等）虽也是 `user/message`，但 `source.kind === 'plugin'`，被明确排除，不会污染优化依据；
+- 尾部最多 80 个事件 → 最多 12 条对话消息 → 每条截断 600 字符 → 全文预算 4000 字符；
+- 上下文是**增强不是依赖**：新会话无历史、会话读取失败、persistence 服务不在，都降级为"仅按草稿优化"，按钮照样工作，成功气泡会标注「（已结合会话上下文）」。
 
 ## 安装
 
@@ -55,7 +63,7 @@ dsh plugin --profile web add link:<本仓库绝对路径>
 | --- | --- | --- |
 | `/api/dsh-prompt-wisp/status` | GET | 版本、能力位（llm 服务 / 默认模型）、草稿长度上限 |
 | `/api/dsh-prompt-wisp/route` | GET | 当前模型路由（不可用时返回原因而非 500） |
-| `/api/dsh-prompt-wisp/optimize` | POST | `{ prompt, provider?, model? }` → `{ optimized, provider, model, tookMs }` |
+| `/api/dsh-prompt-wisp/optimize` | POST | `{ prompt, sessionId?, provider?, model? }` → `{ optimized, provider, model, contextUsed, contextReason?, tookMs }` |
 
 错误约定：客户端可修复的问题（空草稿/超长/路由不存在/模型失败）返回 `200 + { ok:false, error }` 由界面内联展示；只有未预期崩溃才走 500。
 
@@ -82,8 +90,8 @@ dsh plugin --profile web add link:<本仓库绝对路径>
 ## 兼容性
 
 - Node `^22.19.0 || >=24.0.0`；目标 profile：**web**；
-- 宿主服务均为软依赖：没有 `llm` 服务的 profile 里插件照常加载，按钮会明确提示「宿主没有可用的 LLM 服务」；
-- 测试：`node --test`，35 项，全部离线。
+- 宿主服务均为软依赖：没有 `llm` 服务的 profile 里插件照常加载，按钮会明确提示「宿主没有可用的 LLM 服务」；没有 `sessionPersistence` 时上下文感知自动关闭，仅按草稿优化；
+- 测试：`node --test`，47 项，全部离线。
 
 ## 许可证
 

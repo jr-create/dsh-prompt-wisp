@@ -5,7 +5,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRoutes, isLoopbackRequest, ROUTE_PREFIX } from '../lib/http.js';
+import { createRoutes, setConversationDigestReader, isLoopbackRequest, ROUTE_PREFIX } from '../lib/http.js';
+import { readConversationDigest } from '../lib/index.js';
 
 /** Minimal IncomingMessage double. */
 function fakeReq({ url = '/', headers = {}, socket = { remoteAddress: '127.0.0.1' }, body } = {}) {
@@ -182,6 +183,60 @@ test('optimize surfaces model failure messages', async () => {
   await handler(fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下' } }), res);
   assert.equal(res.body.ok, false);
   assert.match(res.body.error, /bad key/);
+});
+
+test('optimize grounds in the session digest when a reader is wired and sessionId is given', async () => {
+  const seen = [];
+  setConversationDigestReader(async (_ctx, sessionId) => {
+    seen.push(sessionId);
+    return { digest: '用户：做一个插件\n助手：好的' };
+  });
+  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+  const res = fakeRes();
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '继续优化它', sessionId: 'session-abc' } }),
+    res,
+  );
+  assert.equal(res.body.ok, true);
+  assert.equal(seen[0], 'session-abc', 'the browser-supplied session id reaches the reader');
+  assert.equal(res.body.contextUsed, true);
+  assert.equal(res.body.contextReason, undefined);
+  setConversationDigestReader(undefined);
+});
+
+test('optimize degrades gracefully when no digest reader is wired', async () => {
+  setConversationDigestReader(undefined);
+  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+  const res = fakeRes();
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下', sessionId: 'session-abc' } }),
+    res,
+  );
+  assert.equal(res.body.ok, true, 'missing context must not fail the optimization');
+  assert.equal(res.body.contextUsed, false);
+});
+
+test('optimize reports context unavailability reasons without failing', async () => {
+  setConversationDigestReader(async () => ({ digest: '', reason: 'read-failed', detail: 'boom' }));
+  const handler = findRoute(routesFor(fakeCtx()), '/optimize');
+  const res = fakeRes();
+  await handler(
+    fakeReq({ headers: LOOPBACK_HEADERS, body: { prompt: '总结一下', sessionId: 'session-xyz' } }),
+    res,
+  );
+  assert.equal(res.body.ok, true);
+  assert.equal(res.body.contextUsed, false);
+  assert.equal(res.body.contextReason, 'read-failed');
+  setConversationDigestReader(undefined);
+});
+
+test('readConversationDigest is exported by the host half and validates its input', async () => {
+  assert.equal(typeof readConversationDigest, 'function');
+  const noId = await readConversationDigest({ get: () => undefined }, undefined);
+  assert.deepEqual(noId, { digest: '', reason: 'no-session' });
+  const noService = await readConversationDigest({ get: () => undefined }, 'session-abc');
+  assert.equal(noService.digest, '');
+  assert.equal(noService.reason, 'persistence-unavailable');
 });
 
 test('every route enforces the trust fence with a 403', async () => {
