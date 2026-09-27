@@ -1,7 +1,7 @@
 {
   "name": "dsh-prompt-wisp",
-  "version": "0.1.0",
-  "description": "Prompt Wisp 提示词精灵 — 在聊天输入区发送按钮旁加一枚「优化提示词」按钮，一键把草稿交给宿主已配置的模型改写成清晰、结构化、可直接执行的提示词。",
+  "version": "0.2.0",
+  "description": "Prompt Wisp 提示词精灵 — 输入区一键优化提示词（简便/详细双模式）+ 会话执行监控（死锁/无效输出/工具循环告警），全部功能集中配置。",
   "type": "module",
   "license": "MIT",
   "engines": {

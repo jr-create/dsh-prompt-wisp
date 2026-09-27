@@ -32,7 +32,7 @@
 
 ```bash
 # 从 GitHub 安装（推荐锁定 release tag）
-dsh plugin --profile web add github:jr-create/dsh-prompt-wisp#v0.1.0
+dsh plugin --profile web add github:jr-create/dsh-prompt-wisp#v0.2.0
 
 # 或跟踪仓库最新状态
 dsh plugin --profile web add github:jr-create/dsh-prompt-wisp
