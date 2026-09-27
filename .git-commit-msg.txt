@@ -1,23 +1,31 @@
-fix: compact mode now races models too - a no-op rewrite reads as broken
+feat: session execution monitor - stall, no-output, tool-loop, turn-error
 
-Live feedback: the local rules pass only fired on dictionary hits, so
-real drafts came back unchanged and the compact mode read as broken.
-The user switched to detail mode to get any real optimization.
+The composer button doubles as an execution watchdog: the client polls
+GET /api/dsh-prompt-wisp/watch every 5s for the current session, and the
+host analyzes the log tail (last 120 events via sessionPersistence, read
+handle, 5s deadline race) with pure rules from lib/watch.js:
 
-Both modes now go through the model race; they differ in budget and
-prompt face, not in engine:
+- stalled (alert): open turn with no new events for 45s - hung tool,
+  wedged provider, or crashed loop.
+- no-output (warn): 8+ steps in an open turn with zero visible text -
+  spinning without saying anything.
+- tool-loop (warn): same tool called 5 times with near-identical
+  arguments (GUIDs, counters and whitespace normalized away, so a loop
+  is a loop but genuinely different commands stay distinct).
+- turn-err (warn): the most recent turn ended with an error, fresh
+  within 2x the stall window.
 
-- compact: lean system prompt (5 lines, tuned for short output), no
-  context read, 6s per-route budget. Measured 0.5-1.5s per call.
-- detail: full structured prompt, session context grounding, 10s
-  per-route budget. Measured 1.4-4s.
+Findings render as a popover next to the button with severity colors;
+dismissing leaves a pulsing dot that reopens it. Polling pauses on
+hidden tabs. The analyzer is pure and read-only - it never writes to
+the session nor interrupts anything; the user decides.
 
-The local rules engine is demoted to the instant fallback when the race
-fails or times out - a rule-passed draft in the same second beats a
-provider error, and trim-filler still applies there.
+Live verification: healthy active session -> healthy; legacy 1.2MB
+session -> healthy in 59ms; unknown id -> degrades with reason
+"not-found". A missing import (setSessionWatchReader) crashed `dsh web`
+at boot during verification - caught by the real-host smoke test, fixed
+before commit; the packaging test suite now runs against every lib
+module but boot requires the host, which is exactly the risk the
+smoke run exists for.
 
-composeSystemPrompt now owns both faces: the compact face lives in
-config.js as a config concern (the engine keeps the base prompt).
-
-68 offline tests (was 67): the compact race face, the instant local
-fallback, and the detail fallback behavior.
+79 offline tests (was 68).
