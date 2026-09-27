@@ -7,12 +7,15 @@ import assert from 'node:assert/strict';
 import {
   CONTEXT_MAX_MESSAGES,
   CONTEXT_MAX_MESSAGE_CHARS,
+  CONTEXT_MAX_TOTAL_CHARS,
   MAX_PROMPT_CHARS,
+  OPTIMIZER_MAX_TOKENS,
   acceptPrompt,
   buildConversationDigest,
   buildOptimizerUserText,
   cleanAnswer,
   collectText,
+  fastCallOptions,
   messageText,
   optimizePrompt,
   resolveModelRoute,
@@ -276,17 +279,18 @@ test('buildConversationDigest returns empty for no conversation', () => {
 });
 
 test('buildConversationDigest keeps the tail and reports truncation', () => {
+  const pairs = CONTEXT_MAX_MESSAGES + 4;
   const events = [];
-  for (let i = 0; i < CONTEXT_MAX_MESSAGES + 4; i += 1) {
+  for (let i = 0; i < pairs; i += 1) {
     events.push(userEvent(`草稿 ${i + 1}`));
     events.push(assistantEvent(`回答 ${i + 1}`));
   }
   const { digest, totalTurns, included, truncated } = buildConversationDigest(events);
-  assert.equal(totalTurns, (CONTEXT_MAX_MESSAGES + 4) * 2);
+  assert.equal(totalTurns, pairs * 2);
   assert.equal(included, CONTEXT_MAX_MESSAGES);
   assert.equal(truncated, true);
   // The tail wins: the newest message is in, the oldest is out.
-  assert.match(digest, /回答 16/);
+  assert.match(digest, new RegExp(`回答 ${pairs}`));
   assert.doesNotMatch(digest, /草稿 1\n/);
   assert.match(digest, /最近 \d+ 条/);
 });
@@ -301,8 +305,133 @@ test('buildConversationDigest clips long messages and honors the total budget', 
   const events = [];
   for (let i = 0; i < 30; i += 1) events.push(userEvent('y'.repeat(900)));
   const result = buildConversationDigest(events);
-  assert.ok(result.digest.length <= 4000 + 200, `digest ${result.digest.length} within budget`);
+  assert.ok(result.digest.length <= CONTEXT_MAX_TOTAL_CHARS + 200, `digest ${result.digest.length} within budget`);
   assert.equal(result.truncated, true);
+});
+
+test('fastCallOptions caps tokens and picks the cheapest declared effort', async () => {
+  // Cheap effort declared in the middle of the list → found by name.
+  const llm1 = {
+    async resolveModelInfo(provider, model) {
+      return { reasoning: { efforts: [{ id: 'high' }, { id: 'low' }, { id: 'medium' }] } };
+    },
+  };
+  const opts1 = await fastCallOptions(llm1, 'p', 'm');
+  assert.equal(opts1.maxTokens > 0, true, 'generation cap present');
+  assert.equal(opts1.reasoningEffort, 'low', 'cheapest declared effort wins');
+
+  // No cheap id → first declared (adapter-preferred order).
+  const llm2 = {
+    async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'deep-think' }, { id: 'quick' }] } }; },
+  };
+  const opts2 = await fastCallOptions(llm2, 'p', 'm');
+  assert.equal(opts2.reasoningEffort, 'deep-think');
+
+  // No reasoning info or lookup failure → cap only, no effort.
+  const opts3 = await fastCallOptions({}, 'p', 'm');
+  assert.deepEqual(opts3, { maxTokens: opts3.maxTokens });
+  assert.equal(opts3.reasoningEffort, undefined);
+  const llm4 = { async resolveModelInfo() { throw new Error('catalog down'); } };
+  const opts4 = await fastCallOptions(llm4, 'p', 'm');
+  assert.equal(opts4.reasoningEffort, undefined, 'capability failure degrades silently');
+});
+
+test('optimizePrompt retries without the effort when the adapter rejects it', async () => {
+  const calls = [];
+  const ports = {
+    llm: {
+      async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'turbo' }] } }; },
+      stream(options) {
+        calls.push({ ...options });
+        if (calls.length === 1) {
+          // First call carries the effort and is rejected by the adapter.
+          if (options.reasoningEffort === 'turbo') {
+            return (async function* () {
+              yield { type: 'finish', reason: { kind: 'error', failure: { message: 'unsupported effort turbo (INVALID)', code: 'INVALID' } } };
+            })();
+          }
+        }
+        return (async function* () {
+          yield { type: 'text-delta', text: '重试成功' };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        })();
+      },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+  };
+  const result = await optimizePrompt(ports, '随便写点');
+  assert.equal(result.ok, true, 'self-healing retry succeeds');
+  assert.equal(result.degraded, true);
+  assert.equal(calls.length, 2, 'exactly one retry');
+  assert.equal(calls[0].reasoningEffort, 'turbo');
+  assert.equal(calls[1].reasoningEffort, undefined, 'retry drops the effort');
+  assert.equal(calls[1].maxTokens, calls[0].maxTokens, 'cap survives the retry');
+});
+
+test('optimizePrompt retries uncapped when a thinking model starves the cap', async () => {
+  const calls = [];
+  const ports = {
+    llm: {
+      stream(options) {
+        calls.push({ ...options });
+        if (calls.length === 1) {
+          // Thinking consumed the whole budget: stop with no visible text.
+          return (async function* () {
+            yield { type: 'reasoning-delta', text: 'let me think…' };
+            yield { type: 'finish', reason: { kind: 'stop' } };
+          })();
+        }
+        return (async function* () {
+          yield { type: 'text-delta', text: '不再饥饿的回答' };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        })();
+      },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+  };
+  const result = await optimizePrompt(ports, '随便优化下');
+  assert.equal(result.ok, true, 'the uncapped retry rescues a starved answer');
+  assert.equal(result.degraded, true);
+  assert.equal(calls.length, 2, 'starved stop + one uncapped retry');
+  assert.equal(calls[0].maxTokens, OPTIMIZER_MAX_TOKENS, 'first call carried the cap');
+  assert.equal(calls[1].maxTokens, undefined, 'retry omits the cap');
+});
+
+test('optimizePrompt passes maxTokens and effort on the fast attempt', async () => {
+  const calls = [];
+  const ports = {
+    llm: {
+      async resolveModelInfo() { return { reasoning: { efforts: [{ id: 'minimal' }] } }; },
+      stream(options) {
+        calls.push({ ...options });
+        return (async function* () {
+          yield { type: 'text-delta', text: '结果' };
+          yield { type: 'finish', reason: { kind: 'stop' } };
+        })();
+      },
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
+  };
+  const result = await optimizePrompt(ports, '写点什么', undefined, '');
+  assert.equal(result.ok, true);
+  assert.equal(result.degraded, false);
+  assert.equal(calls[0].maxTokens > 0, true);
+  assert.equal(calls[0].reasoningEffort, 'minimal');
+});
+
+test('collectText enforces the time budget and reports it as a timeout', async () => {
+  // A stream that never finishes: the budget must abort it.
+  async function* endless() {
+    yield { type: 'text-delta', text: 'partial' };
+    await new Promise(() => {}); // never resolves
+  }
+  const started = Date.now();
+  await assert.rejects(
+    collectText(endless(), 80),
+    /优化超时/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 3000, `budget aborted the call (${elapsed}ms)`);
 });
 
 test('optimizePrompt passes the digest through and reports contextUsed', async () => {

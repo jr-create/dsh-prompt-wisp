@@ -1,0 +1,24 @@
+feat: speed pass - thinner digest, capped generation, lowest effort, hard budget
+
+User-visible latency on the same route dropped from 35-97s (p50 ~48s) to
+15-30s typical, measured over repeated grounded and ungrounded calls on
+workbuddy/glm-5.3-flash.
+
+- Digest bounds cut to a sketch: 12 messages/600 chars/4000 total ->
+  4 messages/160 chars/800 total; event tail scan 80 -> 40. The context
+  only needs to say what the session is about.
+- System prompt gains hard speed rules: output 0.5-1.5x the draft length,
+  usually <=200 chars, no context recitation, no explanations per rule,
+  no lead-in or wrap-up.
+- fastCallOptions: cap generation at 4000 tokens (thinking models count
+  reasoning against the same budget - an 800 cap starved glm-5.3-flash
+  into a zero-visible-text stop, the bug this pass started from) and pick
+  the lowest reasoning effort the exact route declares (GLM reports "off").
+- Two self-healing fallbacks, because a slower answer beats a fast error:
+  an adapter-rejected effort id retries without the effort; a starved
+  zero-text stop retries once uncapped.
+- 90s hard budget raced per iterator step; the timeout error is
+  distinguishable and the stream is closed fire-and-forget (awaiting
+  return() hangs behind a never-settling next()).
+
+52 offline tests (was 47).
